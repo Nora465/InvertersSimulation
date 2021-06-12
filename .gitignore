@@ -1,0 +1,6 @@
+.vs/*
+easyModbusLIB
+EasyModbus.dll
+test.txt
+InvertersSimulation/bin/*
+InvertersSimulation/obj/*
