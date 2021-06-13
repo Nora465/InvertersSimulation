@@ -6,11 +6,12 @@ Imports System.Threading
 
 Namespace MyModbusTCP
 	Class TCPHandler
-		Private WithEvents bgWorker As BackgroundWorker
-		Private WithEvents server As TcpListener = Nothing
-		Private localAddrIP As IPAddress = IPAddress.Any
+		Private WithEvents _bgWorker As BackgroundWorker
+		Private WithEvents _server As TcpListener = Nothing
+		Private _localAddrIP As IPAddress = IPAddress.Any
 
 		Public listOfClients(9) As TcpClient '10 clients possible
+		Public numOfClients As UInt16
 
 		Public Event DataReceived(ByRef buffer() As Byte)
 		Public Event ClientConnected(ByRef client As TcpClient)
@@ -24,7 +25,7 @@ Namespace MyModbusTCP
 		''' </summary>
 		''' <param name="port"> Port d'écoute du serveur TCP </param>
 		Public Sub New(ByVal port As Integer)
-			server = New TcpListener(localAddrIP, port)
+			_server = New TcpListener(_localAddrIP, port)
 		End Sub
 
 		''' <summary>
@@ -33,8 +34,8 @@ Namespace MyModbusTCP
 		''' <param name="IP"></param>
 		''' <param name="port"></param>
 		Public Sub New(ByVal IP As IPAddress, ByVal port As Integer)
-			Me.localAddrIP = IP
-			server = New TcpListener(localAddrIP, port)
+			Me._localAddrIP = IP
+			_server = New TcpListener(_localAddrIP, port)
 		End Sub
 #End Region
 
@@ -44,13 +45,13 @@ Namespace MyModbusTCP
 		''' </summary>
 		Public Sub Start()
 			If Not isServerOn Then
-				server.Start()
+				_server.Start()
 				isServerOn = True
-				bgWorker = New BackgroundWorker With {
+				_bgWorker = New BackgroundWorker With {
 					.WorkerSupportsCancellation = True
 				}
-				If Not bgWorker.IsBusy Then
-					bgWorker.RunWorkerAsync()
+				If Not _bgWorker.IsBusy Then
+					_bgWorker.RunWorkerAsync()
 				End If
 			End If
 
@@ -58,9 +59,17 @@ Namespace MyModbusTCP
 		''' <summary>
 		''' Arrête le serveur
 		''' </summary>
-		Public Sub Close()
+		Public Sub StopServ()
+			'Fermeture des connexions
+			If numOfClients <> 0 Then
+				For Each client In listOfClients
+					client.Client.Close()
+					client.Close()
+				Next
+			End If
+			'Fermeture du serveur
 			If isServerOn Then
-				server.Stop()
+				_server.Stop()
 				isServerOn = False
 			End If
 		End Sub
@@ -76,15 +85,16 @@ Namespace MyModbusTCP
 		End Sub
 #End Region
 
-		Private Sub bgWorker_DoWork() Handles bgWorker.DoWork
+		Private Sub bgWorker_DoWork() Handles _bgWorker.DoWork
 			While isServerOn
 				'Si un client tente de se connecter
-				If server.Pending() Then
+				If _server.Pending() Then
 					For i = 0 To 9
 						If listOfClients(i) Is Nothing Then
-							Dim client As TcpClient = server.AcceptTcpClient()
+							Dim client As TcpClient = _server.AcceptTcpClient()
 
 							listOfClients(i) = client
+							numOfClients += 1
 							client.ReceiveTimeout = 4000
 							RaiseEvent ClientConnected(client)
 							Exit For
@@ -109,6 +119,7 @@ Namespace MyModbusTCP
 									Dim indexToDel As Integer = Array.IndexOf(listOfClients, client)
 									If indexToDel <> -1 Then
 										listOfClients(indexToDel) = Nothing
+										numOfClients -= 1
 										Continue For 'goto la boucle suivante du for
 									End If
 								End If
@@ -131,7 +142,7 @@ Namespace MyModbusTCP
 				Thread.Sleep(50)
 			End While
 
-			bgWorker.CancelAsync()
+			_bgWorker.CancelAsync()
 		End Sub
 	End Class
 End Namespace
