@@ -17,9 +17,9 @@ Namespace MyModbusTCP
     ''' </summary>
     Public Class ModbusServer
 #Region "DEFINITIONS GLOBALES"
-        Private tcpHandler As TCPHandler
-        Public numOfConnex As UInt16
-        Private isGateway As Boolean = False 'Si le serveur simule aussi des esclaves RTU (= passerelle MB TCP -> RTU)
+        Private _tcpHandler As TCPHandler
+        Public _numOfConnex As UInt16
+
         Public RTUSlaves() As ModbusSlave = Nothing
 
         Public holdingRegisters As RegistersWords
@@ -29,31 +29,42 @@ Namespace MyModbusTCP
 
         Public Event ClientConnected(ByVal client As TcpClient)
         Public Event ClientDisconnected(ByVal client As TcpClient)
-        Public Event HoldingRegistersChanged(ByVal UnitID As UInt16, ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
-        'Public Event InputRegistersChanged(ByVal UnitID As UInt16, ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
-        Public Event CoilsChanged(ByVal UnitID As UInt16, ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
-        'Public Event DiscreteInputsChanged(ByVal UnitID As UInt16, ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
 
+        'Events for "gateway" (UnitID = 0)
+        Public Event GatewayHoldingRegistersChanged(ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
+        'Public Event GatewayInputRegistersChanged(ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
+        Public Event GatewayCoilsChanged(ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
+        'Public Event GatewayDiscreteInputsChanged(ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
 
-        Private TrameRecue As DT_TrameModbus
-        Private TrameEnvoi As _DT_PDU_Resp
+        'Events for the RTU slaves (UnitID <> 0)
+        Public Event SlaveHoldingRegChanged(ByRef RTUSlave As ModbusSlave, ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
+        'Public Event SlaveInputRegChanged(ByRef RTUSlave As ModbusSlave)
+        Public Event SlaveCoilsChanged(ByRef RTUSlave As ModbusSlave, ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
+        'Public Event SlaveDiscreteInputsChanged(ByRef RTUSlave As ModbusSlave)
 
+        Private _MBRequest As DT_TrameModbus
+        Private _MBResponse As _DT_PDU_Resp
+
+        'Parameters
         Public FC1Disabled As Boolean
-        'Public FC2Disabled As Boolean
+        Public FC2Disabled As Boolean
         Public FC3Disabled As Boolean
-        'Public FC4Disabled As Boolean
+        Public FC4Disabled As Boolean
         Public FC5Disabled As Boolean
         Public FC6Disabled As Boolean
-        Public FC15Disabled As Boolean
+        'Public FC15Disabled As Boolean
         Public FC16Disabled As Boolean
 
-        Private debug As Boolean = False
+        Private _hasSlaves As Boolean = False 'Si le serveur simule des esclaves RTU (= passerelle MB TCP -> RTU)
+        Private _useBigEndian As Boolean = True 'TODO Ajouter la gestion du Big Endian ou Little Endian
+
+        Private _debug As Boolean = False
 #End Region
 
 #Region "STRUCTURES"
         Public Structure DT_TrameModbus
             Dim FunctionCode As Byte
-            Dim MBAPHeader As _DT_MBAPHeader
+            Dim MBAP As _DT_MBAPHeader
             Dim PDU As _DT_PDU_Requ
         End Structure
 
@@ -96,45 +107,57 @@ Namespace MyModbusTCP
 #End Region
 
 #Region "CONSTRUCTEURS"
-        Public Sub New(ByVal port As Integer)
-            tcpHandler = New TCPHandler(port)
-            _Construct()
+        Public Sub New(port As Integer, bigEndian As Boolean)
+            Me._tcpHandler = New TCPHandler(port)
+            Me._Construct(0, bigEndian)
         End Sub
 
-        Public Sub New(ByVal port As Integer, ByVal numOfSlaves As Int16)
-            tcpHandler = New TCPHandler(port)
-            isGateway = True
-            ReDim RTUSlaves(numOfSlaves)
-            _Construct()
+        Public Sub New(port As Integer, bigEndian As Boolean, numOfSlaves As UInt16)
+            Me._tcpHandler = New TCPHandler(port)
+            Me._Construct(numOfSlaves, bigEndian)
         End Sub
 
-        Public Sub New(ByVal IP As IPAddress, ByVal port As Integer)
-            tcpHandler = New TCPHandler(IP, port)
-            _Construct()
+        Public Sub New(IP As IPAddress, port As Integer, bigEndian As Boolean)
+            Me._tcpHandler = New TCPHandler(IP, port)
+            Me._Construct(0, bigEndian)
         End Sub
-        Public Sub New(ByVal IP As IPAddress, ByVal port As Integer, ByVal numOfSlaves As Int16)
-            tcpHandler = New TCPHandler(IP, port)
-            isGateway = True
-            ReDim RTUSlaves(numOfSlaves)
-            _Construct()
+        Public Sub New(IP As IPAddress, port As Integer, bigEndian As Boolean, numOfSlaves As UInt16)
+            Me._tcpHandler = New TCPHandler(IP, port)
+            Me._Construct(numOfSlaves, bigEndian)
         End Sub
 
-        Private Sub _Construct()
-            coils = New RegistersBits()
-            holdingRegisters = New RegistersWords()
-            AddHandler tcpHandler.ClientConnected, AddressOf _TcpHandler_ClientConnected
-            AddHandler tcpHandler.ClientDisconnected, AddressOf _TcpHandler_ClientDisconnected
-            AddHandler tcpHandler.DataReceived, AddressOf _TcpHandler_DataReceived
+        Private Sub _Construct(numOfSlaves As UInt16, bigEndian As Boolean)
+            Me.coils = New RegistersBits()
+            Me.holdingRegisters = New RegistersWords()
+
+            'Define if this server handle RTU Slaves
+            Me._hasSlaves = (numOfSlaves <> 0)
+
+            'Creation of RTU slaves
+            If Me._hasSlaves Then
+                ReDim Me.RTUSlaves(numOfSlaves - 1)
+
+                For i = 0 To numOfSlaves - 1
+                    Me.RTUSlaves(i) = New ModbusSlave(i + 1)
+                Next
+            End If
+
+            'Define the byte order of the values
+            _useBigEndian = bigEndian
+
+            AddHandler Me._tcpHandler.ClientConnected, AddressOf Me._TcpHandler_ClientConnected
+            AddHandler Me._tcpHandler.ClientDisconnected, AddressOf Me._TcpHandler_ClientDisconnected
+            AddHandler Me._tcpHandler.DataReceived, AddressOf Me._TcpHandler_DataReceived
         End Sub
 #End Region
 
 #Region "PUBLIC-FUNCTIONS"
         Public Sub StartListening()
-            tcpHandler.Start()
+            _tcpHandler.Start()
         End Sub
 
         Public Sub StopListening()
-            tcpHandler.StopServ()
+            _tcpHandler.StopServ()
         End Sub
 #End Region
 
@@ -148,20 +171,30 @@ Namespace MyModbusTCP
         End Sub
 
         Private Sub _TcpHandler_DataReceived(ByRef buffer() As Byte) 'handles tcpHandler.DataReceived
-            Dim sss As String = ""
-            For i = 0 To 5 + buffer(5)
-                sss &= CStr(buffer(i))
-            Next
+            If _debug Then
+                Dim debugStr As String = ""
+                For i = 0 To 5 + buffer(5)
+                    debugStr &= CStr(buffer(i))
+                Next
+                Console.WriteLine(debugStr)
+            End If
 
-            TrameRecue = _ExtractFromBuffer(buffer)
+            _MBRequest = Me._ExtractFromBuffer(buffer)
 
-            _AnalyzeTrameRecue(TrameRecue)
+            Dim regHasChanged As Boolean
 
+            'The request is for the server itself
+            If _MBRequest.MBAP.UnitID = 255 Or Not Me._hasSlaves Then
+                regHasChanged = Me._UpdateRegisters(Me.holdingRegisters, Me.coils)
+                If regHasChanged Then RaiseEvent GatewayCoilsChanged(_MBRequest.PDU.StartAddr, 1)
 
-            _UpdateRegisters(TrameRecue)
+            Else 'The request is for a RTU slave
+                Dim slave As ModbusSlave = RTUSlaves(_MBRequest.MBAP.UnitID - 1)
+                regHasChanged = Me._UpdateRegisters(slave.holdingRegisters, slave.coils)
 
+                If regHasChanged Then RaiseEvent SlaveCoilsChanged(slave, _MBRequest.PDU.StartAddr, 1)
+            End If
 
-            Console.WriteLine(sss)
         End Sub
 #End Region
 
@@ -170,10 +203,10 @@ Namespace MyModbusTCP
         ''' Construction des MBAPHeader et PDU (le PDU utilisé dépend du code fonction)
         ''' </summary>
         ''' <param name="buffer"> Requête envoyée par un client connecté </param>
-        Private Function _ExtractFromBuffer(ByVal buffer() As Byte) As DT_TrameModbus
+        Private Function _ExtractFromBuffer(buffer() As Byte) As DT_TrameModbus
             Dim MBTrame As New DT_TrameModbus
 
-            With MBTrame.MBAPHeader
+            With MBTrame.MBAP
                 .TransactionID = (buffer(0) << 8) Or buffer(1)
                 .ProtocoleID = (buffer(2) << 8) Or buffer(3)
                 .Length = (buffer(5)) << 8 Or buffer(4)
@@ -193,7 +226,8 @@ Namespace MyModbusTCP
                     Case 5 'FC5 : Write one bit
                         'VALIDé 13/06/2021 (manque la vérif pour les 2 cas de la valeur bool)
                         .StartAddr = (buffer(8) << 8) Or buffer(9)
-                        .WOne.BitToWrite = (buffer(10) = &H_FF) '0x0000 => False  0xFF00=> True
+                        .WOne.BitToWrite = (buffer(10) = &H_FF) '0x0000 => False  0xFF00=> True 
+                        'TODO faire une vérification de la valeur du buffer(10) au cas où
                     Case 6 'FC6 : Write one word
                         'Validé 13/06/2021
                         .StartAddr = (buffer(8) << 8) Or buffer(9)
@@ -225,72 +259,71 @@ Namespace MyModbusTCP
             Return MBTrame
         End Function
 
-        'Private Function _ConstructBuffer(ByVal functionCode As Int16, ByVal MBAP As DT_MBAPHeader, ByVal PDU As DT_BasicPDU) As Byte()
-        '    Dim buffer(20) As Byte
-
-        '    'FC15 ou FC16 => Ecriture plusieurs mots/bits
-        '    If MBAP.FunctionCode = 15 Or MBAP.FunctionCode = 16 Then
-
-        '    End If
-
-        'End Function
 #End Region
 
 #Region "PRIVATE - MàJ des registres du serveur MB"
-        Private Sub _UpdateRegisters(ByVal trameRecue As DT_TrameModbus)
-
-        End Sub
-
         ''' <summary>
-        ''' Tous ces codes fonctions ont été testé au 13/06/2021 (sauf FC15, car pas implementé)
+        ''' 
         ''' </summary>
-        ''' <param name="trameRecue"></param>
-        ''' <returns> Tableau de 1 + x index : FC, adresses des registres modifiés </returns>
-        Private Function _AnalyzeTrameRecue(ByVal trameRecue As DT_TrameModbus) As UInt16()
-            TrameEnvoi = New _DT_PDU_Resp
-            With TrameEnvoi
-                Select Case trameRecue.FunctionCode
+        ''' <param name="curRegisters"></param>
+        ''' <param name="curCoils"></param>
+        ''' <returns> return a bool that indicate if a register has changed </returns>
+        Private Function _UpdateRegisters(ByRef curRegisters As RegistersWords, ByRef curCoils As RegistersBits) As Boolean
+            Me._MBResponse = New _DT_PDU_Resp
+            Dim regHasChanged As Boolean = False
+
+            With Me._MBResponse
+                Select Case Me._MBRequest.FunctionCode
                     Case 1 'FC1 : Read nBits
-                        'nbBytes = (nb de bits) / 8  ; Si le reste est différent de 0, nbBytes += 1
-                        .nbBytes = trameRecue.PDU.NbToRead / 8
-                        If trameRecue.PDU.NbToRead Mod 8 <> 0 Then
+                        'Compute the number of bytes for the Response PDU
+                        .nbBytes = _MBRequest.PDU.NbToRead / 8 'nbBytes = (nb de bits) / 8  ; Si le reste est différent de 0, nbBytes += 1
+                        If _MBRequest.PDU.NbToRead Mod 8 <> 0 Then
                             .nbBytes += 1
                         End If
 
-                        ReDim .BitsState(trameRecue.PDU.NbToRead - 1)
-                        For index = 0 To trameRecue.PDU.NbToRead - 1
-                            .BitsState(index) = coils(trameRecue.PDU.StartAddr + index)
+                        ReDim .BitsState(Me._MBRequest.PDU.NbToRead - 1)
+                        For index = 0 To .BitsState.Length
+                            .BitsState(index) = curCoils(_MBRequest.PDU.StartAddr + index)
                         Next
 
                     Case 3 'FC3 : Read nMots
-                        'nbBytes = nb de registre demandé
-                        .nbBytes = trameRecue.PDU.NbToRead
+                        'nbBytes = nb of registers wanted
+                        .nbBytes = _MBRequest.PDU.NbToRead
 
-                        ReDim .WordsValue(trameRecue.PDU.NbToRead - 1)
-                        For index = 0 To trameRecue.PDU.NbToRead - 1
-                            .WordsValue(index) = holdingRegisters(trameRecue.PDU.StartAddr + index)
+                        ReDim .WordsValue(_MBRequest.PDU.NbToRead - 1)
+                        For index = 0 To _MBRequest.PDU.NbToRead - 1
+                            .WordsValue(index) = curRegisters(_MBRequest.PDU.StartAddr + index)
                         Next
 
                     Case 5 'FC5 : Write one bit
-                        coils(trameRecue.PDU.StartAddr) = trameRecue.PDU.WOne.BitToWrite
+                        curCoils(_MBRequest.PDU.StartAddr) = _MBRequest.PDU.WOne.BitToWrite
+                        regHasChanged = True
+
                     Case 6 'FC6 : Write one word
-                        holdingRegisters(trameRecue.PDU.StartAddr) = trameRecue.PDU.WOne.WordToWrite
+                        curRegisters(_MBRequest.PDU.StartAddr) = _MBRequest.PDU.WOne.WordToWrite
+                        regHasChanged = True
+
                     Case 15 'FC15 : Write nBits
-                        .nbBytes = trameRecue.PDU.NbToWrite
-                        For index = trameRecue.PDU.StartAddr To trameRecue.PDU.NbToWrite - 1
-                            coils(index) = trameRecue.PDU.WMult.BitsToWrite(index)
+                        .nbBytes = _MBRequest.PDU.NbToWrite
+                        For index = _MBRequest.PDU.StartAddr To _MBRequest.PDU.NbToWrite - 1
+                            curCoils(index) = _MBRequest.PDU.WMult.BitsToWrite(index)
                         Next
+                        regHasChanged = True
+
                     Case 16 'FC16 : Write nMots
-                        .nbBytes = trameRecue.PDU.NbToWrite
-                        For index = 0 To trameRecue.PDU.NbToWrite - 1
-                            holdingRegisters(trameRecue.PDU.StartAddr + index) = trameRecue.PDU.WMult.WordsToWrite(index)
+                        .nbBytes = _MBRequest.PDU.NbToWrite
+                        For index = 0 To _MBRequest.PDU.NbToWrite - 1
+                            curRegisters(_MBRequest.PDU.StartAddr + index) = _MBRequest.PDU.WMult.WordsToWrite(index)
                         Next
+                        regHasChanged = True
                     Case Else
-                        Throw New Exception("Code fonction non pris en compte ! : " & CStr(trameRecue.FunctionCode))
+                        Throw New Exception("Code fonction non pris en compte ! : " & CStr(_MBRequest.FunctionCode))
                 End Select
             End With
 
+            Return regHasChanged
         End Function
+
 #End Region
     End Class
 

@@ -8,9 +8,9 @@ Namespace MyModbusTCP
 	Public Class ModbusSlave
 
 		Public AddressMB As UInt16
-		Public holdingRegisters As RegistersWords
+		Public holdingRegisters As New RegistersWords()
 		'Public inputRegisters As RegistersWords
-		Public coils As RegistersBits
+		Public coils As New RegistersBits()
 		'Public discreteInputs As RegistersBits
 
 		Public Sub New(ByVal addressModbus As UInt16)
