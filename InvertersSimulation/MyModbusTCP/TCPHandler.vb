@@ -13,7 +13,7 @@ Namespace MyModbusTCP
 		Public listOfClients(9) As TcpClient '10 clients possible
 		Public numOfClients As UInt16
 
-		Public Event DataReceived(ByRef buffer() As Byte)
+		Public Event DataReceived(ByRef client As TcpClient, ByRef buffer() As Byte)
 		Public Event ClientConnected(ByRef client As TcpClient)
 		Public Event ClientDisconnected(ByRef client As TcpClient)
 
@@ -103,7 +103,7 @@ Namespace MyModbusTCP
 				End If
 
 				For Each client In listOfClients
-					If client IsNot Nothing Then
+					If client IsNot Nothing AndAlso client.Connected Then
 
 						Try
 							'Si on detecte un client déconnecté
@@ -125,7 +125,7 @@ Namespace MyModbusTCP
 								End If
 							End If
 						Catch ex As Exception
-							MsgBox("Erreur TCPHandler/ligne 96 : " & vbCrLf & ex.Message)
+							MsgBox("Erreur TCPHandler/ligne 130 : " & vbCrLf & ex.Message)
 						End Try
 
 						'Si un client envoi une trame
@@ -134,7 +134,7 @@ Namespace MyModbusTCP
 						If networkStream.DataAvailable Then
 							Dim buffer(256) As Byte
 							networkStream.Read(buffer, 0, buffer.Length)
-							RaiseEvent DataReceived(buffer)
+							RaiseEvent DataReceived(client, buffer)
 						End If
 					End If
 				Next

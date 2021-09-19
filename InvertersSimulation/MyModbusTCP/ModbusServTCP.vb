@@ -42,8 +42,10 @@ Namespace MyModbusTCP
         Public Event SlaveCoilsChanged(ByRef RTUSlave As ModbusSlave, ByVal firstReg As UInt16, ByVal numOfReg As UInt16)
         'Public Event SlaveDiscreteInputsChanged(ByRef RTUSlave As ModbusSlave)
 
-        Private _MBRequest As DT_TrameModbus
-        Private _MBResponse As _DT_PDU_Resp
+        Public Event ErrorOccured() 'todo gérer l'event ErrorOccured
+        'Private _MBRequest As DT_TrameModbus
+        'Private _MBResponse As _DT_PDU_Resp
+        Private _curMBFrame As DT_TrameModbus
 
         'Parameters
         Public FC1Disabled As Boolean
@@ -63,9 +65,10 @@ Namespace MyModbusTCP
 
 #Region "STRUCTURES"
         Public Structure DT_TrameModbus
-            Dim FunctionCode As Byte
             Dim MBAP As _DT_MBAPHeader
-            Dim PDU As _DT_PDU_Requ
+            Dim functionCode As Byte
+            Dim reqPDU As _DT_PDU_Requ
+            Dim response As _DT_PDU_Resp
         End Structure
 
         Public Structure _DT_PDU_Resp
@@ -170,7 +173,7 @@ Namespace MyModbusTCP
             RaiseEvent ClientDisconnected(client)
         End Sub
 
-        Private Sub _TcpHandler_DataReceived(ByRef buffer() As Byte) 'handles tcpHandler.DataReceived
+        Private Sub _TcpHandler_DataReceived(ByRef client As TcpClient, ByRef buffer() As Byte) 'handles tcpHandler.DataReceived
             If _debug Then
                 Dim debugStr As String = ""
                 For i = 0 To 5 + buffer(5)
@@ -179,21 +182,25 @@ Namespace MyModbusTCP
                 Console.WriteLine(debugStr)
             End If
 
-            _MBRequest = Me._ExtractFromBuffer(buffer)
+            _curMBFrame = Me._ExtractFromBuffer(buffer)
 
             Dim regHasChanged As Boolean
 
             'The request is for the server itself
-            If _MBRequest.MBAP.UnitID = 255 Or Not Me._hasSlaves Then
+            If _curMBFrame.MBAP.UnitID = 255 Or Not Me._hasSlaves Then
                 regHasChanged = Me._UpdateRegisters(Me.holdingRegisters, Me.coils)
-                If regHasChanged Then RaiseEvent GatewayCoilsChanged(_MBRequest.PDU.StartAddr, 1)
+                If regHasChanged Then RaiseEvent GatewayCoilsChanged(_curMBFrame.reqPDU.StartAddr, 1)
 
             Else 'The request is for a RTU slave
-                Dim slave As ModbusSlave = RTUSlaves(_MBRequest.MBAP.UnitID - 1)
+                Dim slave As ModbusSlave = RTUSlaves(_curMBFrame.MBAP.UnitID - 1)
                 regHasChanged = Me._UpdateRegisters(slave.holdingRegisters, slave.coils)
 
-                If regHasChanged Then RaiseEvent SlaveCoilsChanged(slave, _MBRequest.PDU.StartAddr, 1)
+                If regHasChanged Then RaiseEvent SlaveCoilsChanged(slave, _curMBFrame.reqPDU.StartAddr, 1)
             End If
+
+            Dim resBuffer As Byte() = BuildResBuffer(_curMBFrame)
+
+            _tcpHandler.SendBuffer(client, resBuffer)
 
         End Sub
 #End Region
@@ -215,8 +222,8 @@ Namespace MyModbusTCP
 
             MBTrame.FunctionCode = buffer(7)
 
-            With MBTrame.PDU
-                Select Case MBTrame.FunctionCode
+            With MBTrame.reqPDU
+                Select Case MBTrame.functionCode
                     Case 1, 3 'FC1 : Read nBits      FC3 : Read nMots
                         'VALIDé 13/06/2021
                         .StartAddr = (buffer(8) << 8) Or buffer(9)
@@ -231,13 +238,13 @@ Namespace MyModbusTCP
                     Case 6 'FC6 : Write one word
                         'Validé 13/06/2021
                         .StartAddr = (buffer(8) << 8) Or buffer(9)
-                        .WOne.WordToWrite = (buffer(10) << 8) Or buffer(11)
+                        .WOne.WordToWrite = (CUInt(buffer(10)) << 8) Or buffer(11)
 
                     Case 15 'FC15 : Write nBits
                         ' ????
                         .StartAddr = (buffer(8) << 8) Or buffer(9)
                         .NbToWrite = (buffer(10) << 8) Or buffer(11)
-                        Throw New NotImplementedException()
+                        Throw New NotImplementedException("code Function non implémenté")
                         ReDim .WMult.BitsToWrite(.NbToWrite - 1)
                         For index = 0 To .NbToWrite - 1
                             .WMult.BitsToWrite(index) = CUInt(buffer(13 + index * 2)) << 8 Or buffer(14 + index * 2)
@@ -259,6 +266,92 @@ Namespace MyModbusTCP
             Return MBTrame
         End Function
 
+        Private Function BuildResBuffer(MBFrame As DT_TrameModbus) As Byte()
+            Dim buffer(7) As Byte
+
+            'Assign MBAP header to buffer
+            With MBFrame.MBAP
+                buffer(0) = .TransactionID >> 8
+                buffer(1) = .TransactionID And &H_00FF
+                buffer(2) = .ProtocoleID >> 8
+                buffer(3) = .ProtocoleID And &H_00FF
+                buffer(4) = .Length >> 8
+                buffer(5) = .Length And &H_00FF
+                buffer(6) = .UnitID
+            End With
+
+            With MBFrame.response
+                Select Case MBFrame.functionCode
+                    Case 1, 2 'FC1 : Read nBits      'FC2 : Read n Discrete Inputs
+                        ReDim Preserve buffer(7 + 2 + .nbBytes - 1)
+                        buffer(7) = MBFrame.functionCode
+                        buffer(8) = .nbBytes
+
+                        Dim bufIndex As Byte = 0
+                        For i = 0 To .nbBytes - 1
+
+                        Next 'TODO y'a des problème quand on a plus d'un octet en bits (avec le 2^i ligne 298)
+
+                        For i = 0 To .BitsState.Length - 1
+                            'Calculate the index (8 bits in 1 byte)
+                            bufIndex = 9 + Math.Truncate(i / 8)
+                            buffer(bufIndex) = buffer(bufIndex) Or (IIf(.BitsState(i), 1, 0) * Math.Pow(2, i))
+                        Next
+
+                    Case 3 'FC3 : Read nMots
+                        ReDim Preserve buffer(7 + 2 + .nbBytes * 2 - 1)
+                        buffer(7) = MBFrame.functionCode
+                        buffer(8) = .nbBytes
+                        For i = 0 To .nbBytes - 1
+                            'Put bits in order in the buffer
+                            buffer(9 + i * 2) = .WordsValue(i) >> 8
+                            buffer(10 + i * 2) = .WordsValue(i) And &H_00FF
+                        Next
+                    Case 5 'FC5 : Write one bit
+                        'todo revoir la partie "PDU_Resp" de la fct "UpdateReg" qui doit contenir l'adresse du début (en plus des datas)
+                        ReDim Preserve buffer(7 + 3 + 2) 'MBAP + FC/addrStart + datas
+                        buffer(7) = MBFrame.functionCode
+                        buffer(8) = MBFrame.reqPDU.StartAddr >> 8
+                        buffer(9) = MBFrame.reqPDU.StartAddr And &H_00FF
+
+                        'Put bit in buffer (FF00: True   0000: False)
+                        buffer(10) = IIf(MBFrame.reqPDU.WOne.BitToWrite, &H_FF, &H_00)
+                        buffer(11) = &H_00
+                    Case 6 'FC6 : Write one word
+                        ReDim Preserve buffer(7 + 3 + 2) 'MBAP + FC/addrStart + datas
+                        buffer(7) = MBFrame.functionCode
+                        buffer(8) = MBFrame.reqPDU.StartAddr >> 8
+                        buffer(9) = MBFrame.reqPDU.StartAddr And &H_00FF
+
+                        'Put bit in buffer (FF00: True   0000: False)
+                        buffer(10) = MBFrame.reqPDU.WOne.WordToWrite >> 8
+                        buffer(11) = MBFrame.reqPDU.WOne.WordToWrite And &H_00FF
+
+                    Case 15 'FC15 : Write nBits
+                        ReDim Preserve buffer(7 + 3 + 2) 'MBAP + FC/addrStart + datas
+                        buffer(7) = MBFrame.functionCode
+                        buffer(8) = MBFrame.reqPDU.StartAddr >> 8
+                        buffer(9) = MBFrame.reqPDU.StartAddr And &H_00FF
+
+                        'Put bits in buffer (FF00: True   0000: False)
+                        buffer(10) = MBFrame.reqPDU.NbToWrite >> 8
+                        buffer(11) = MBFrame.reqPDU.NbToWrite And &H_00FF
+                    Case 16 'FC16 : Write nMots
+                        ReDim Preserve buffer(7 + 3 + 2) 'MBAP + FC/addrStart + datas
+                        buffer(7) = MBFrame.functionCode
+                        buffer(8) = MBFrame.reqPDU.StartAddr >> 8
+                        buffer(9) = MBFrame.reqPDU.StartAddr And &H_00FF
+
+                        'Put bits in buffer (FF00: True   0000: False)
+                        buffer(10) = MBFrame.reqPDU.NbToWrite >> 8
+                        buffer(11) = MBFrame.reqPDU.NbToWrite And &H_00FF
+                    Case Else
+                        Throw New Exception("Code fonction non pris en compte !")
+                End Select
+            End With
+
+            Return buffer
+        End Function
 #End Region
 
 #Region "PRIVATE - MàJ des registres du serveur MB"
@@ -269,55 +362,55 @@ Namespace MyModbusTCP
         ''' <param name="curCoils"></param>
         ''' <returns> return a bool that indicate if a register has changed </returns>
         Private Function _UpdateRegisters(ByRef curRegisters As RegistersWords, ByRef curCoils As RegistersBits) As Boolean
-            Me._MBResponse = New _DT_PDU_Resp
+            'Me._MBResponse = New _DT_PDU_Resp
             Dim regHasChanged As Boolean = False
 
-            With Me._MBResponse
-                Select Case Me._MBRequest.FunctionCode
+            With _curMBFrame.response
+                Select Case _curMBFrame.functionCode
                     Case 1 'FC1 : Read nBits
                         'Compute the number of bytes for the Response PDU
-                        .nbBytes = _MBRequest.PDU.NbToRead / 8 'nbBytes = (nb de bits) / 8  ; Si le reste est différent de 0, nbBytes += 1
-                        If _MBRequest.PDU.NbToRead Mod 8 <> 0 Then
+                        .nbBytes = _curMBFrame.reqPDU.NbToRead / 8 'nbBytes = (nb de bits) / 8  ; Si le reste est différent de 0, nbBytes += 1
+                        If _curMBFrame.reqPDU.NbToRead Mod 8 <> 0 Then
                             .nbBytes += 1
                         End If
 
-                        ReDim .BitsState(Me._MBRequest.PDU.NbToRead - 1)
-                        For index = 0 To .BitsState.Length
-                            .BitsState(index) = curCoils(_MBRequest.PDU.StartAddr + index)
+                        ReDim .BitsState(_curMBFrame.reqPDU.NbToRead - 1)
+                        For index = 0 To .BitsState.Length - 1
+                            .BitsState(index) = curCoils(_curMBFrame.reqPDU.StartAddr + index)
                         Next
 
                     Case 3 'FC3 : Read nMots
                         'nbBytes = nb of registers wanted
-                        .nbBytes = _MBRequest.PDU.NbToRead
+                        .nbBytes = _curMBFrame.reqPDU.NbToRead
 
-                        ReDim .WordsValue(_MBRequest.PDU.NbToRead - 1)
-                        For index = 0 To _MBRequest.PDU.NbToRead - 1
-                            .WordsValue(index) = curRegisters(_MBRequest.PDU.StartAddr + index)
+                        ReDim .WordsValue(_curMBFrame.reqPDU.NbToRead - 1)
+                        For index = 0 To _curMBFrame.reqPDU.NbToRead - 1
+                            .WordsValue(index) = curRegisters(_curMBFrame.reqPDU.StartAddr + index)
                         Next
 
                     Case 5 'FC5 : Write one bit
-                        curCoils(_MBRequest.PDU.StartAddr) = _MBRequest.PDU.WOne.BitToWrite
+                        curCoils(_curMBFrame.reqPDU.StartAddr) = _curMBFrame.reqPDU.WOne.BitToWrite
                         regHasChanged = True
 
                     Case 6 'FC6 : Write one word
-                        curRegisters(_MBRequest.PDU.StartAddr) = _MBRequest.PDU.WOne.WordToWrite
+                        curRegisters(_curMBFrame.reqPDU.StartAddr) = _curMBFrame.reqPDU.WOne.WordToWrite
                         regHasChanged = True
 
                     Case 15 'FC15 : Write nBits
-                        .nbBytes = _MBRequest.PDU.NbToWrite
-                        For index = _MBRequest.PDU.StartAddr To _MBRequest.PDU.NbToWrite - 1
-                            curCoils(index) = _MBRequest.PDU.WMult.BitsToWrite(index)
+                        .nbBytes = _curMBFrame.reqPDU.NbToWrite
+                        For index = _curMBFrame.reqPDU.StartAddr To _curMBFrame.reqPDU.NbToWrite - 1
+                            curCoils(index) = _curMBFrame.reqPDU.WMult.BitsToWrite(index)
                         Next
                         regHasChanged = True
 
                     Case 16 'FC16 : Write nMots
-                        .nbBytes = _MBRequest.PDU.NbToWrite
-                        For index = 0 To _MBRequest.PDU.NbToWrite - 1
-                            curRegisters(_MBRequest.PDU.StartAddr + index) = _MBRequest.PDU.WMult.WordsToWrite(index)
+                        .nbBytes = _curMBFrame.reqPDU.NbToWrite
+                        For index = 0 To _curMBFrame.reqPDU.NbToWrite - 1
+                            curRegisters(_curMBFrame.reqPDU.StartAddr + index) = _curMBFrame.reqPDU.WMult.WordsToWrite(index)
                         Next
                         regHasChanged = True
                     Case Else
-                        Throw New Exception("Code fonction non pris en compte ! : " & CStr(_MBRequest.FunctionCode))
+                        Throw New Exception("Code fonction non pris en compte ! : " & CStr(_curMBFrame.functionCode))
                 End Select
             End With
 
