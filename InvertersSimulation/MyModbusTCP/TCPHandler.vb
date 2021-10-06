@@ -5,6 +5,10 @@ Imports System.ComponentModel 'Contient le worker
 Imports System.Threading
 
 Namespace MyModbusTCP
+	''' <summary>
+	''' TCPHandler is a TCP Server that can manage up to 10 clients simultaneously
+	''' </summary>
+	''' 'todo agrandir la liste de clients possible ?
 	Class TCPHandler
 		Private WithEvents _bgWorker As BackgroundWorker
 		Private WithEvents _server As TcpListener = Nothing
@@ -128,13 +132,35 @@ Namespace MyModbusTCP
 							MsgBox("Erreur TCPHandler/ligne 130 : " & vbCrLf & ex.Message)
 						End Try
 
-						'Si un client envoi une trame
-						Dim networkStream As NetworkStream = client.GetStream()
+						'If a client has sent data to this server
+						If client.Connected Then
+							Dim networkStream As NetworkStream = client.GetStream()
+							If networkStream.DataAvailable Then
+								Dim tempBuffer(256), buffer() As Byte
+								Dim bytesRead As UInt16
 
-						If networkStream.DataAvailable Then
-							Dim buffer(256) As Byte
-							networkStream.Read(buffer, 0, buffer.Length)
-							RaiseEvent DataReceived(client, buffer)
+								'while there is bytes in buffer, read them (and add them to the buffer)
+								Using ms As MemoryStream = New MemoryStream()
+									bytesRead = networkStream.Read(tempBuffer, 0, tempBuffer.Length)
+									While bytesRead > 0
+										ms.Write(tempBuffer, 0, bytesRead)
+
+										'If we still have data in stream, get it
+										If networkStream.DataAvailable Then
+											bytesRead = networkStream.Read(tempBuffer, 0, tempBuffer.Length)
+										Else
+											Exit While
+										End If
+
+									End While
+
+									'copy all memoryStream in buffer
+									ReDim buffer(ms.Length)
+									buffer = ms.ToArray()
+								End Using
+
+								RaiseEvent DataReceived(client, buffer)
+							End If
 						End If
 					End If
 				Next
